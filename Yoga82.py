@@ -2,6 +2,7 @@ from PIL import Image
 from os.path import isfile, join
 import os
 from torch.utils.data import Dataset
+import torch
 from torchvision.transforms import v2
 
 class Yoga(Dataset):
