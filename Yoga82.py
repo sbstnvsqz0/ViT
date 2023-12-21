@@ -18,7 +18,7 @@ class Yoga(Dataset):
             self.paths+=aux
         
         if transforms == None:
-            self.transforms = v2.Compose([v2.Resize([128,128]), v2.ToImage(),v2.ToDtype(torch.float32,scale=True)])
+            self.transforms = v2.Compose([v2.Resize([224,224]), v2.ToImage(),v2.ToDtype(torch.float32,scale=True)])
         else:
             self.transforms = transforms
     def __len__(self):
@@ -33,8 +33,6 @@ class Yoga(Dataset):
         image = image.convert('RGB')
         image = self.transforms(image)
 
-        return {
-                'image':image,
-                'label':label
-            } 
+        return {'image':image, 'label':label} 
+
         

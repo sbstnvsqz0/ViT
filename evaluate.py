@@ -14,7 +14,7 @@ def evaluate(net,dataloader,device,criterion,n_val):
             
             label_pred = torch.argmax(pred,dim=1).float()
 
-            loss = criterion(pred,label).item()
+            loss += criterion(pred,label).item()
             acc += (label_pred==label).sum()
         epoch_loss = loss/num_val_batches
         epoch_acc = acc.item()/n_val

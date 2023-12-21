@@ -25,10 +25,10 @@ class Embedding(nn.Module):
         clase = self.class_embedding.expand(x.shape[0],-1,-1)   #Se cambia la dimension 0 para ajustar a tamaño de x luego de salir de convolucion
         x = self.patches(x).permute(0,2,1)  #Se cambian posiciones para que encajen las dimensiones para la concatenación
         x = torch.cat([clase,x],dim=1)
-
+        
         x = self.position + x
 
-        x = nn.Dropout(p = 0.3)(x)  #Se agrega un dropout para mejorar rendimiento y evitar sobreajuste
+        x = nn.Dropout(p = 0.2)(x)  #Se agrega un dropout para mejorar rendimiento y evitar sobreajuste
         return x
     
 class Encoder(nn.Module):
@@ -36,7 +36,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(input_dim)
         
-        self.self_attn = nn.MultiheadAttention(input_dim,n_heads,dropout=dropout)
+        self.self_attn = nn.MultiheadAttention(input_dim,n_heads,dropout=dropout,batch_first=True)
 
         self.mlp = nn.Sequential(nn.Linear(input_dim,ff_dim),
                                          nn.Linear(ff_dim,input_dim),
