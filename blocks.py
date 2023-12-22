@@ -8,7 +8,7 @@ class Embedding(nn.Module):
         #stride de largo patch_size para que se aplique a cada patch. La dimensión final representa el embedding como tal
         #Al final una capa flatten(2) para aplanar dimensiones y dejar en patches en 2d
         """Entrada: batch_size,3,224,224
-            Salida: batch_size,197(14x14+1),embedding_size"""
+            Salida: batch_size,(n_patches+1),embedding_size"""
         self.patches = nn.Sequential(nn.Conv2d(in_channels = in_channels,   
                                                out_channels = embedding_size,
                                                kernel_size= patch_size,
@@ -16,10 +16,10 @@ class Embedding(nn.Module):
                                                nn.Flatten(2))
         
         #embedding de posición entrenable (se suma a)
-        self.position = nn.Parameter(torch.zeros(size=(1,n_patches+1,embedding_size)), requires_grad = True)
+        self.position = nn.Parameter(torch.zeros(size=(1,n_patches+1,embedding_size),requires_grad=True), requires_grad = True)
         #class embedding entrenable (se concatena a salida de la conv2d), se inicializa como cero.
         #El 1 de la dimensión 0 luego es cambiado por el tamaño de batch
-        self.class_embedding = nn.Parameter(torch.zeros(size = (1,1,embedding_size)),requires_grad = True)
+        self.class_embedding = nn.Parameter(torch.zeros(size = (1,1,embedding_size),requires_grad=True),requires_grad = True)
 
     def forward(self,x):
         clase = self.class_embedding.expand(x.shape[0],-1,-1)   #Se cambia la dimension 0 para ajustar a tamaño de x luego de salir de convolucion
@@ -60,7 +60,8 @@ class ViT(nn.Module):
         super().__init__()
         self.embedding_block = Embedding(patch_size,n_patches,in_channels,embedding)
         self.encoder_block = Encoder(n_heads, embedding,hidden_dim)
-        self.mlp_head = nn.Sequential(nn.Linear(in_features = embedding, out_features=n_classes),
+        self.mlp_head = nn.Sequential(nn.Linear(in_features = embedding, out_features=hidden_dim),
+                                      nn.Linear(in_features=hidden_dim,out_features=n_classes),
                                       nn.Tanh())
         self.n_encoders = n_encoders
     def forward(self,x):
@@ -68,4 +69,15 @@ class ViT(nn.Module):
         for _ in range(self.n_encoders):
             x = self.encoder_block(x)
         x = self.mlp_head(x[:,0,:])
+        return x
+    
+class MLP_fine_tunning(nn.Module):
+    def __init__(self,in_channels,out_channels):
+        super().__init__()
+        self.linear = nn.Sequential(nn.Linear(in_features=in_channels, out_features=out_channels),
+                                    nn.Tanh())
+        
+    def forward(self,x):
+        x = x[:,0,:]
+        x = self.linear(x)
         return x

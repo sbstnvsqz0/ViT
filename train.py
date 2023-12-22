@@ -13,6 +13,7 @@ import os
 import argparse
 import logging
 from torchvision.transforms import v2
+import pandas as pd
 
 f = open("Yoga-82/yoga_train.txt");
 lines = f.readlines();
@@ -33,9 +34,9 @@ torch.cuda.empty_cache()
 if (not os.path.isdir("dict_states")):
     os.mkdir("dict_states")
 
-#MANUAL SEED
 #CONGELAR CAPAS
 def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encoders,n_heads, hidden_dim, in_channels,n_classes,learning_rate,save_dict=True,dictionary=None):
+    # Se crea .txt con hiperparámetros
     while True:
         num = random.randint(0,100)
         if (not os.path.isdir("dict_states/"+str(num))):
@@ -49,30 +50,33 @@ def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encode
     file = open("dict_states/"+str(num)+"/params.txt",'a')
     file.write(str(parameters))
     file.close()
+    df_losses = pd.DataFrame(columns=["Train","Validation"])    #Guardar Losses
 
-    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     criterion = nn.CrossEntropyLoss()
+
+    #Se inicializa modelo
     model = ViT(patch_size, n_patches, embedding, n_encoders, n_heads, hidden_dim, in_channels, n_classes)
+
     if dictionary is not None:  #Se carga modelo
         assert type(dictionary) == str, "Model must be a string for transfer learning"
-        model = model.load_state_dict(dictionary)
+        model.load_state_dict(dictionary)
         optimizer = optim.SGD(model.parameters(),momentum =0.9, lr= learning_rate,weight_decay=0.1)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=50, eta_min=1e-7)
         
     else:
-        model = ViT(patch_size, n_patches, embedding, n_encoders, n_heads, hidden_dim, in_channels, n_classes)
         optimizer = optim.Adam(model.parameters(),betas =(0.9, 0.999), lr = learning_rate,weight_decay=0.1)
         scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=0.3, end_factor = 1, total_iters=7)
     model.to(device=device)
+    ######################################################### DATASET #########################################################
     dataset = Yoga(images_dir="Images", dictionary=d, n_classes=n_classes)
     n_val = int(len(dataset)*val_percent)
     n_train = len(dataset)-n_val
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
     train_loader = DataLoader(train_set,batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=True)
-
-    best_val_acc=np.inf
+    ###########################################################################################################################
+    best_val_loss = np.inf
     
     for epoch in range(0,epochs):
         model.train()
@@ -90,7 +94,7 @@ def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encode
                 optimizer.zero_grad()
                 t_loss.backward()
                 optimizer.step()
-                scheduler.step()
+
                 train_correct += (label_pred == label).sum()
                 pbar.update(img.shape[0])
             
@@ -98,11 +102,15 @@ def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encode
             train_acc = train_correct/ (n_train)
         
         val_epoch_loss,val_acc = evaluate(model,val_loader,device,criterion,n_val)
-        
+        scheduler.step()
+        dict_epoch ={"Train":train_epoch_loss,"Validation":val_epoch_loss}
+        df_epoch = pd.DataFrame(dict_epoch,index=[0])
+        df_losses = pd.concat([df_losses,df_epoch],ignore_index=True)
+        df_losses.to_csv("dict_states/"+str(num)+"/losses.csv",index=False)
 
-        if save_dict and val_acc<best_val_acc:
+        if save_dict and val_epoch_loss<best_val_loss:
             torch.save(model.state_dict(), 'dict_states/{}/checkpoint.pth'.format(str(num)))
-        
+            best_val_loss = val_epoch_loss
         print("Epoch : {},\tTrain Loss : {:.4f}, \tVal Loss : {:.4f},\tTrain Acc : {:.4f},\tVal Acc : {:.4f}".format(epoch,train_epoch_loss,val_epoch_loss,train_acc,val_acc))
     
 
@@ -118,7 +126,7 @@ def get_args():
     parser.add_argument("--n_heads","-head",type = int ,default = 8  , help = "Número de heads")
     parser.add_argument("--hidden_dim","-hidd",type = int ,default = 2048 , help = "Dimensión de hidden layer")
     parser.add_argument("--in_channels","-i",type = int ,default = 3 , help = "Número de canales de imagen de entrada")
-    parser.add_argument("--n_classes","-class",type = int ,default = 6 , help = "Número de clases (6, 20 u 81)")
+    parser.add_argument("--n_classes","-class",type = int ,default = 6 , help = "Número de clases (6, 20 u 82)")
     parser.add_argument("--lr","-l", metavar="LR", type=float, default=0.001, help="Learning Rate")
     parser.add_argument("--save_dict","-save",type = bool ,default = True , help = "Si es True guarda modelo luego de cada época")
     parser.add_argument("--dictionary","-d",type = str ,default = None , help = "Carga modelo en caso de definirse")
@@ -131,19 +139,19 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
     
-
+    
     train(epochs = args.epochs,
           val_percent = args.val_percent,
-          batch_size = args.batch_size,
-          patch_size = args.patch_size,
-          n_patches = args.n_patches,
-          embedding = args.embedding,
-          n_encoders = args.n_encoders,
-          n_heads = args.n_heads,
-          hidden_dim = args.hidden_dim,
+          batch_size = 32,
+          patch_size = 32,
+          n_patches = 7*7,
+          embedding = 768,
+          n_encoders = 8,
+          n_heads = 8,
+          hidden_dim = 2048,
           in_channels = args.in_channels,
-          n_classes = args.n_classes,
-          learning_rate = args.lr,
+          n_classes = 82,
+          learning_rate = 3e-1,
           save_dict = args.save_dict,
           dictionary = args.dictionary
         )

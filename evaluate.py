@@ -1,5 +1,7 @@
 import torch
 from tqdm import tqdm
+
+@torch.inference_mode()
 def evaluate(net,dataloader,device,criterion,n_val):
     net.eval()
     num_val_batches=len(dataloader)
@@ -18,5 +20,5 @@ def evaluate(net,dataloader,device,criterion,n_val):
             acc += (label_pred==label).sum()
         epoch_loss = loss/num_val_batches
         epoch_acc = acc.item()/n_val
-
+    net.train()
     return epoch_loss, epoch_acc

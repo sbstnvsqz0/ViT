@@ -18,14 +18,15 @@ class Yoga(Dataset):
             self.paths+=aux
         
         if transforms == None:
-            self.transforms = v2.Compose([v2.Resize([224,224]), v2.ToImage(),v2.ToDtype(torch.float32,scale=True)])
+            self.transforms = v2.Compose([v2.Resize([224,224]), v2.ToImage(),
+                                          v2.ToDtype(torch.float32,scale=True)])
         else:
             self.transforms = transforms
     def __len__(self):
         return len(self.paths)
     
     def __getitem__(self,idx):
-        img_path = self.paths[idx]
+        img_path = self.paths[idx]  
         position = img_path.split("/")[1]
         labels = self.dictionary[position]
         label = labels[0] if self.n_classes==6 else labels[1] if self.n_classes==20 else labels[2]
