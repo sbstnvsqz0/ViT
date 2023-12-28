@@ -1,1 +1,0 @@
-{'epochs': 150, 'val_percent': 0.1, 'batch_size': 32, 'patch_size': 16, 'n_patches': 64, 'embedding': 768, 'n_encoders': 4, 'n_heads': 8, 'hidden_dim': 1024, 'in_channels': 3, 'n_classes': 20, 'learning_rate': 0.001, 'save_dict': True}
