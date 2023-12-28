@@ -14,7 +14,7 @@ import argparse
 import logging
 from torchvision.transforms import v2
 import pandas as pd
-from utils.scheduler import Scheduler, Scheduler2
+from utils.scheduler import Scheduler
 from blocks import MLP_fine_tunning
 from utils.ContarClase import contar_clase
 from torch import nn,matmul
