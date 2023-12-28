@@ -1,5 +1,6 @@
 import torch
-from torch import nn
+from torch import nn,matmul
+from torch.nn.functional import softmax
 
 class Embedding(nn.Module):
     def __init__(self, patch_size, n_patches,in_channels, embedding_size):
@@ -16,10 +17,11 @@ class Embedding(nn.Module):
                                                nn.Flatten(2))
         
         #embedding de posición entrenable (se suma a)
-        self.position = nn.Parameter(torch.zeros(size=(1,n_patches+1,embedding_size),requires_grad=True), requires_grad = True)
+        self.position = nn.Parameter(torch.rand(size=(1,n_patches+1,embedding_size)), requires_grad = True)
         #class embedding entrenable (se concatena a salida de la conv2d), se inicializa como cero.
         #El 1 de la dimensión 0 luego es cambiado por el tamaño de batch
-        self.class_embedding = nn.Parameter(torch.zeros(size = (1,1,embedding_size),requires_grad=True),requires_grad = True)
+        self.class_embedding = nn.Parameter(torch.rand(size = (1,1,embedding_size)),requires_grad = True)
+        self.dropout = nn.Dropout(p=0.1)
 
     def forward(self,x):
         clase = self.class_embedding.expand(x.shape[0],-1,-1)   #Se cambia la dimension 0 para ajustar a tamaño de x luego de salir de convolucion
@@ -28,49 +30,102 @@ class Embedding(nn.Module):
         
         x = self.position + x
 
-        x = nn.Dropout(p = 0.2)(x)  #Se agrega un dropout para mejorar rendimiento y evitar sobreajuste
+        x = self.dropout(x)  #Se agrega un dropout para mejorar rendimiento y evitar sobreajuste
         return x
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self,embedding,n_heads,heads_size):
+        super().__init__()
+
+        self.n_heads = n_heads  #Número de cabezas
+        self.heads_size = heads_size    #Tamaño de las cabezas
+        self.embedding = embedding  #largo de los embeddings
+        assert self.embedding % self.n_heads == 0,"Embedding must be divisible by number of heads."
+
+        #Para representar los pesos de matrices q, k y v se arman linear layer
+        self.linear_q = nn.Linear(embedding,n_heads*heads_size, bias=True)
+
+        self.linear_k = nn.Linear(embedding, n_heads*heads_size, bias=True)
+
+        self.linear_v = nn.Linear(embedding, n_heads*heads_size, bias =True)
+
+        self.final_layer = nn.Linear(n_heads*heads_size, embedding, bias=True)
+
+    def forward(self, x):
+        batch_size, seq, embedding = x.shape
+        
+        #Separa la dimensión final en 2 para expresar matrices
+        #Luego se usa transpose para que para cada cabeza tenga su correspondiente matriz Q de dimensiones seq,heads_size
+        q = self.linear_q(x).view(batch_size, seq, self.n_heads,self.heads_size).transpose(1,2)
+
+        k = self.linear_k(x).view(batch_size, seq, self.n_heads,self.heads_size).transpose(1,2)
+
+        v = self.linear_v(x).view(batch_size, seq, self.n_heads,self.heads_size).transpose(1,2)
+
+        ######################################## SCALED DOT PRODUCT ATTENTION ####################################################
+
+        attention = q/(self.heads_size**(1/2)) #Paper Attention all you need
+        
+        #Matriz K de cada (batch,head) se traspone
+        attention = matmul(attention,k.transpose(-1,-2))
+        attention = softmax(attention,dim=-1)
+        attention = matmul(attention,v)
+        #Aquí se tienen las matrices de attention para todos los batch,head
+
+        #Se hace de nuevo un reshape y se unen las cabezas 
+        output = attention.transpose(1,2).contiguous().view(batch_size,seq,self.n_heads*self.heads_size)
+        output = self.final_layer(output)
+        return output
     
 class Encoder(nn.Module):
     def __init__(self,n_heads,input_dim,ff_dim,dropout=0.1):
         super().__init__()
         self.norm = nn.LayerNorm(input_dim)
         
-        self.self_attn = nn.MultiheadAttention(input_dim,n_heads,dropout=dropout,batch_first=True)
+        self.self_attn = MultiHeadAttention(input_dim,n_heads,heads_size=64) #Head_size calculado como embedding/n_heads:768/8
 
         self.mlp = nn.Sequential(nn.Linear(input_dim,ff_dim),
-                                         nn.Linear(ff_dim,input_dim),
-                                         nn.GELU())
+                                 nn.GELU(),
+                                 nn.Dropout(dropout),
+                                nn.Linear(ff_dim,input_dim),
+                                nn.Dropout(dropout))
+                                         
         
         self.dropout = nn.Dropout(dropout)
 
     def forward(self,x):
         r1 = x
         x = self.norm(x)
-        attn_output, _ = self.self_attn(x,x,x)
-        r2 = r1+attn_output
+        x = self.self_attn(x)
+        r2 = r1+x
         x = self.norm(r2)
         x = self.mlp(x)
-        x = self.dropout(x)
         x = x + r2
         return x
-    
+
+
+
 class ViT(nn.Module):
     def __init__(self,patch_size,n_patches,embedding,n_encoders,n_heads,hidden_dim,in_channels,n_classes):
-        super().__init__()
+        super(ViT,self).__init__()
         self.embedding_block = Embedding(patch_size,n_patches,in_channels,embedding)
-        self.encoder_block = Encoder(n_heads, embedding,hidden_dim)
-        self.mlp_head = nn.Sequential(nn.Linear(in_features = embedding, out_features=hidden_dim),
-                                      nn.Linear(in_features=hidden_dim,out_features=n_classes),
+        
+        self.encoder_blocks = nn.ModuleList([Encoder(n_heads, embedding, hidden_dim) for _ in range(n_encoders)])
+
+        self.mlp_head = nn.Sequential(nn.Linear(in_features = embedding, out_features=512),
+                                      nn.ReLU(),
+                                      nn.Linear(in_features=512,out_features=n_classes),
                                       nn.Tanh())
         self.n_encoders = n_encoders
     def forward(self,x):
         x = self.embedding_block(x)
-        for _ in range(self.n_encoders):
-            x = self.encoder_block(x)
+        for encoder_block in self.encoder_blocks:
+            x = encoder_block(x)
         x = self.mlp_head(x[:,0,:])
         return x
     
+
 class MLP_fine_tunning(nn.Module):
     def __init__(self,in_channels,out_channels):
         super().__init__()
@@ -78,6 +133,5 @@ class MLP_fine_tunning(nn.Module):
                                     nn.Tanh())
         
     def forward(self,x):
-        x = x[:,0,:]
         x = self.linear(x)
         return x

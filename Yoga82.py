@@ -6,7 +6,7 @@ import torch
 from torchvision.transforms import v2
 
 class Yoga(Dataset):
-    def __init__(self,images_dir, dictionary, n_classes,transforms=None):
+    def __init__(self,images_dir, dictionary, n_classes):
         assert n_classes == 6 or n_classes==20 or n_classes== 82
         self.images_dir = images_dir
         self.dictionary = dictionary
@@ -17,11 +17,12 @@ class Yoga(Dataset):
             aux = [self.images_dir+"/"+k+"/"+f for f in os.listdir(self.images_dir+"/"+k) if isfile(join(self.images_dir+"/"+k,f))]
             self.paths+=aux
         
-        if transforms == None:
-            self.transforms = v2.Compose([v2.Resize([224,224]), v2.ToImage(),
-                                          v2.ToDtype(torch.float32,scale=True)])
-        else:
-            self.transforms = transforms
+        
+        self.transforms = v2.Compose([v2.Resize([128,128]), 
+                                      v2.ToImage(),
+                                      v2.ToDtype(torch.float32,scale=True),
+                                      v2.Normalize(mean = [0.5,0.5,0.5],std=[0.5,0.5,0.5])])
+
     def __len__(self):
         return len(self.paths)
     
@@ -30,8 +31,9 @@ class Yoga(Dataset):
         position = img_path.split("/")[1]
         labels = self.dictionary[position]
         label = labels[0] if self.n_classes==6 else labels[1] if self.n_classes==20 else labels[2]
+        
         image = Image.open(img_path)
-        image = image.convert('RGB')
+        image = image.convert("RGB")
         image = self.transforms(image)
 
         return {'image':image, 'label':label} 

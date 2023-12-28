@@ -14,6 +14,12 @@ import argparse
 import logging
 from torchvision.transforms import v2
 import pandas as pd
+from utils.scheduler import Scheduler, Scheduler2
+from blocks import MLP_fine_tunning
+from utils.ContarClase import contar_clase
+from torch import nn,matmul
+from torch.nn.functional import softmax
+
 
 f = open("Yoga-82/yoga_train.txt");
 lines = f.readlines();
@@ -34,7 +40,6 @@ torch.cuda.empty_cache()
 if (not os.path.isdir("dict_states")):
     os.mkdir("dict_states")
 
-#CONGELAR CAPAS
 def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encoders,n_heads, hidden_dim, in_channels,n_classes,learning_rate,save_dict=True,dictionary=None):
     # Se crea .txt con hiperparámetros
     while True:
@@ -53,56 +58,97 @@ def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encode
     df_losses = pd.DataFrame(columns=["Train","Validation"])    #Guardar Losses
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    criterion = nn.CrossEntropyLoss()
 
-    #Se inicializa modelo
-    model = ViT(patch_size, n_patches, embedding, n_encoders, n_heads, hidden_dim, in_channels, n_classes)
+    criterion = nn.CrossEntropyLoss()
+    
 
     if dictionary is not None:  #Se carga modelo
         assert type(dictionary) == str, "Model must be a string for transfer learning"
-        model.load_state_dict(dictionary)
+        last_n_classes = 20 if n_classes==82 else 6 if n_classes==20 else None
+        model = ViT(patch_size, n_patches, embedding, n_encoders, n_heads, hidden_dim, in_channels, last_n_classes)
+        try:
+            model.load_state_dict(torch.load(dictionary))
+        except:
+            model.mlp_head = MLP_fine_tunning(embedding,last_n_classes)
+            model.load_state_dict(torch.load(dictionary))
+        print("Model loaded correctly")
+        #Se quita mlp head y se agrega al final una capa linear y una tanh
+        model.mlp_head = MLP_fine_tunning(embedding,n_classes)
+        #Se congelan todas las capas, excepto Linear final y class_embedding
+        for name,param in model.named_parameters():
+            if not ("mlp_head" in name):
+                param.requires_grad = False
+            if "class_embedding" in name:
+                param.requires_grad = True
         optimizer = optim.SGD(model.parameters(),momentum =0.9, lr= learning_rate,weight_decay=0.1)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=50, eta_min=1e-7)
         
     else:
-        optimizer = optim.Adam(model.parameters(),betas =(0.9, 0.999), lr = learning_rate,weight_decay=0.1)
-        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=0.3, end_factor = 1, total_iters=7)
+        model = ViT(patch_size, n_patches, embedding, n_encoders, n_heads, hidden_dim, in_channels, n_classes)
+        optimizer = optim.Adam(model.parameters(),betas =(0.9, 0.999), lr = learning_rate,weight_decay=0.03)
+        scheduler = Scheduler(optimizer=optimizer, dim_embed=embedding,warmup_steps=1000)
+
     model.to(device=device)
-    ######################################################### DATASET #########################################################
+    
     dataset = Yoga(images_dir="Images", dictionary=d, n_classes=n_classes)
+    dataset.transforms = v2.Compose([v2.Resize([128,128]), 
+                                 v2.RandomHorizontalFlip(p=0.2),
+                                 v2.RandomRotation(degrees=45),
+                                 v2.RandomVerticalFlip(p=0.2),
+                                 v2.ToImage(),v2.ToDtype(torch.float32,scale=True),
+                                 v2.Normalize([0.5,0.5,0.5],[0.5,0.5,0.5])])
+    
     n_val = int(len(dataset)*val_percent)
     n_train = len(dataset)-n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    train_set, _ = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
     train_loader = DataLoader(train_set,batch_size=batch_size, shuffle=True)
+
+    dataset0 = Yoga(images_dir="Images", dictionary=d, n_classes=n_classes)
+    _, val_set = random_split(dataset0, [n_train, n_val], generator=torch.Generator().manual_seed(0))
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=True)
-    ###########################################################################################################################
-    best_val_loss = np.inf
     
+    best_val_loss = np.inf
+    patience = 0
+
     for epoch in range(0,epochs):
         model.train()
         train_loss = 0
+        batch_count = 0
         train_correct = 0
+
+        if patience ==10 and epoch>50:
+            break
+
         with tqdm(total=n_train,desc=f'Epoch {epoch}/{epochs}',unit="img") as pbar:
             for batch in train_loader:
+                
                 img = batch['image'].float().to(device=device)
                 label = batch['label'].type(torch.uint8).to(device=device)
                 t_pred = model(img)
-                label_pred = torch.argmax(t_pred, dim = 1).float()
+                label_pred = torch.argmax(t_pred, dim = 1)
             
                 t_loss = criterion(t_pred, label)
                 train_loss += t_loss.item()
-                optimizer.zero_grad()
+                batch_count+=1
                 t_loss.backward()
-                optimizer.step()
+                if batch_count%16==0:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    scheduler.step()
 
+                
                 train_correct += (label_pred == label).sum()
                 pbar.update(img.shape[0])
-            
+            if batch_count%16!=0:   #Optimiza luego de 512 imágenes 
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+
             train_epoch_loss = train_loss / (len(train_loader))
             train_acc = train_correct/ (n_train)
         
         val_epoch_loss,val_acc = evaluate(model,val_loader,device,criterion,n_val)
-        scheduler.step()
+        
         dict_epoch ={"Train":train_epoch_loss,"Validation":val_epoch_loss}
         df_epoch = pd.DataFrame(dict_epoch,index=[0])
         df_losses = pd.concat([df_losses,df_epoch],ignore_index=True)
@@ -111,12 +157,16 @@ def train(epochs,val_percent,batch_size,patch_size,n_patches, embedding,n_encode
         if save_dict and val_epoch_loss<best_val_loss:
             torch.save(model.state_dict(), 'dict_states/{}/checkpoint.pth'.format(str(num)))
             best_val_loss = val_epoch_loss
+            patience=0
+        
+        else:
+            patience+=1
         print("Epoch : {},\tTrain Loss : {:.4f}, \tVal Loss : {:.4f},\tTrain Acc : {:.4f},\tVal Acc : {:.4f}".format(epoch,train_epoch_loss,val_epoch_loss,train_acc,val_acc))
     
 
 def get_args():
     parser = argparse.ArgumentParser('Train a network')
-    parser.add_argument('--epochs',"-e",metavar="E",type=int,default=10,help="Número de epocas")
+    parser.add_argument('--epochs',"-e",metavar="E",type=int,default=150,help="Número de epocas")
     parser.add_argument("--val_percent","-v",type=float, default=0.1,help="Porcentaje del conjunto que se usa para validación")
     parser.add_argument('--batch_size','-b',dest="batch_size",metavar="B",type=int,default=32, help = "Batch Size")
     parser.add_argument("--patch_size","-p",type=int, default=16, help = "Tamaño de los patches")
@@ -139,19 +189,19 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
     
-    
+    #Cambiar args para entrenamientos específicos
     train(epochs = args.epochs,
           val_percent = args.val_percent,
-          batch_size = 32,
-          patch_size = 32,
-          n_patches = 7*7,
-          embedding = 768,
-          n_encoders = 8,
-          n_heads = 8,
-          hidden_dim = 2048,
+          batch_size = args.batch_size,
+          patch_size = args.patch_size,
+          n_patches = args.n_patches,
+          embedding = args.embedding,
+          n_encoders = args.n_encoders,
+          n_heads = args.n_heads,
+          hidden_dim = args.hidden_dim,
           in_channels = args.in_channels,
-          n_classes = 82,
-          learning_rate = 3e-1,
+          n_classes = args.n_classes,
+          learning_rate = args.lr,
           save_dict = args.save_dict,
           dictionary = args.dictionary
         )
